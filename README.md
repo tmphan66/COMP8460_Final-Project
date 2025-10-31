@@ -1,4 +1,4 @@
-# Meditron Simple – Single Folder App
+# Meditron App
 
 Privacy‑preserving clinical text analysis with **Streamlit + FAISS + Ollama (meditron:7b)** in one folder.
 
