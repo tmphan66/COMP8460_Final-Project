@@ -1,0 +1,8 @@
+streamlit>=1.37.0
+pyyaml>=6.0.1
+langchain>=0.2.0
+langchain-community>=0.2.0
+faiss-cpu>=1.7.4
+scispacy>=0.5.4
+spacy>=3.7.2
+philter @ git+https://github.com/BCHSI/philter-ucsf.git#egg=philter

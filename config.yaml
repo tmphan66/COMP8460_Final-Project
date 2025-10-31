@@ -1,0 +1,22 @@
+project:
+  name: meditron_simple
+models:
+  llm:
+    provider: ollama
+    model: "meditron:7b"
+    temperature: 0.2
+    max_tokens: 700
+  embeddings:
+    backend: "ollama"
+    name: "nomic-embed-text"
+retrieval:
+  chunk_size: 800
+  chunk_overlap: 160
+  k: 20
+  k_final: 5
+privacy:
+  block_on_phi_leak: true
+umls_linking:
+  enable: true
+  k: 1
+  threshold: 0.75
