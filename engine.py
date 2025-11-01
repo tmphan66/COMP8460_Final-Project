@@ -1,4 +1,47 @@
 import os, glob, re, yaml
+
+def _engine_log(msg: str):
+    print(f"[ENGINE] {msg}", flush=True)
+
+
+# --- Section detection (HPI/Assessment/Plan + synonyms) ---
+SECTION_PATTERNS = {
+    "HPI": re.compile(r"\b(HPI|History of Present Illness|Subjective)\s*:\s*", re.I),
+    "Assessment": re.compile(r"\b(Assessment|Impression)\s*:\s*", re.I),
+    "Plan": re.compile(r"\b(Plan)\s*:\s*", re.I),
+    # Optional extras you can enable later:
+    # "Objective": re.compile(r"\b(Objective)\s*:\s*", re.I),
+    # "ROS": re.compile(r"\b(Review of Systems|ROS)\s*:\s*", re.I),
+}
+
+def split_sections(text: str):
+    """Return dict of detected sections -> text slices.
+    If no sections detected, returns an empty dict.
+    """
+    if not text:
+        return {}
+    hits = []
+    for name, pat in SECTION_PATTERNS.items():
+        for m in pat.finditer(text):
+            hits.append((m.start(), m.end(), name))
+    if not hits:
+        return {}
+
+    # sort by start index
+    hits.sort(key=lambda x: x[0])
+    sections = {}
+    for i, (s, e, name) in enumerate(hits):
+        start = e
+        end = hits[i+1][0] if i+1 < len(hits) else len(text)
+        chunk = text[start:end].strip()
+        # merge if repeated headers occur
+        if name in sections and chunk:
+            sections[name] += "\n\n" + chunk
+        elif chunk:
+            sections[name] = chunk
+    return sections
+
+
 from typing import List, Dict, Any, Optional
 # De-ID
 try:
@@ -24,11 +67,17 @@ if SPACY_OK:
 
 # LangChain / FAISS / Ollama
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import OllamaEmbeddings
+try:
+    from langchain_ollama import OllamaEmbeddings, OllamaLLM
+    NEW_OLLAMA = True
+except Exception:
+    from langchain_community.embeddings import OllamaEmbeddings
+    from langchain_community.llms import Ollama as OllamaLLM
+    NEW_OLLAMA = False
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from langchain_community.llms import Ollama
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 # ---------- De-ID ----------
 class DeIdentifier:
@@ -46,6 +95,7 @@ class DeIdentifier:
         ]
 
     def redact(self, text: str) -> Dict[str, Any]:
+        _engine_log("DeIdentifier.redact: starting redaction")
         had_phi = False
         out = text or ""
         if self.philter:
@@ -85,6 +135,7 @@ class ClinicalNER:
         return ["aspirin", "nitroglycerin", "troponin", "ecg", "chest pain", "dyspnea", "shortness of breath"]
 
     def extract(self, text: str) -> List[Dict[str, Any]]:
+        _engine_log("ClinicalNER.extract: extracting entities")
         ents: List[Dict[str, Any]] = []
         if self.nlp and self.nlp.has_pipe("ner"):
             doc = self.nlp(text)
@@ -127,12 +178,20 @@ class RelationExtractor:
 
 # ---------- RAG pipeline (FAISS + Ollama) ----------
 class RagPipeline:
+    _BUILDING = False
+
     def __init__(self, cfg: Dict[str, Any]):
+        _engine_log("RagPipeline.__init__: initializing pipeline")
         self.cfg = cfg
-        self.embedder = OllamaEmbeddings(model=cfg["models"]["embeddings"]["name"])
+        # Embeddings with robust fallback (Fix #1)
+        ollama_embed_model = cfg["models"]["embeddings"]["name"]  
+        self.embedder = OllamaEmbeddings(model=ollama_embed_model)
+
+        # LLM (modern adapter or legacy)
         llm_cfg = cfg["models"]["llm"]
-        self.llm = Ollama(model=llm_cfg["model"], temperature=llm_cfg["temperature"])
-        self.index_path = os.path.join(os.getcwd(), "faiss_index")
+        self.llm = OllamaLLM(model=llm_cfg["model"], temperature=llm_cfg.get("temperature", 0.2))
+
+        # Prompt
         self.prompt = ChatPromptTemplate.from_messages([
             ("system",
              "You are a clinical information assistant. Provide concise, non-diagnostic, educational information "
@@ -141,60 +200,138 @@ class RagPipeline:
              "Context:\n{context}\n\nEntities: {entities}\nRelations: {relations}\n\nText:\n{query}\n\n"
              "Give 2–4 key points with bracketed [#] citations and end with a short disclaimer.")
         ])
+
+        # Absolute paths + single KB dir (Fix #4)
+        base_dir = os.path.abspath(os.path.dirname(__file__))
+        self.index_path = os.path.join(base_dir, "faiss_index")
+        self.kb_dir = base_dir
+
         self.vs = None
         self.build_or_load_index()
 
+        # Runnable chain (Fix #2 Option B)
+        try:
+            self.chain = self.prompt | self.llm
+        except Exception:
+            self.chain = None
+
     def build_or_load_index(self):
-        faiss_file = os.path.join(self.index_path, "index.faiss")
+        _engine_log("RagPipeline.build_or_load_index: preparing FAISS index")
+
         os.makedirs(self.index_path, exist_ok=True)
+
+        faiss_file = os.path.join(self.index_path, "index.faiss")
+        marker_file = os.path.join(self.index_path, ".building")
+
+        # Fast path: index already exists
         if os.path.exists(faiss_file):
-            self.vs = FAISS.load_local(self.index_path, self.embedder, allow_dangerous_deserialization=True)
+            try:
+                self.vs = FAISS.load_local(self.index_path, self.embedder, allow_dangerous_deserialization=True)
+                return
+            except Exception:
+                pass  # fall through and rebuild
+
+        # Another process might be building
+        if os.path.exists(marker_file):
+            if os.path.exists(faiss_file):
+                try:
+                    self.vs = FAISS.load_local(self.index_path, self.embedder, allow_dangerous_deserialization=True)
+                    return
+                except Exception:
+                    pass  # rebuild below
+
+        # In-process guard to avoid re-entrant builds
+        if getattr(RagPipeline, "_BUILDING", False):
+            if os.path.exists(faiss_file):
+                try:
+                    self.vs = FAISS.load_local(self.index_path, self.embedder, allow_dangerous_deserialization=True)
+                    return
+                except Exception:
+                    pass
+            # Last-resort minimal index to avoid crashing
+            self.vs = FAISS.from_texts(["Temporary empty index"], self.embedder)
             return
-        # Build from local *.md files in this folder
-        files = [f for f in glob.glob(os.path.join(os.getcwd(), "*.md")) if os.path.basename(f).lower() != "readme.md"]
-        docs = []
-        for f in files:
-            with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                docs.append(Document(page_content=fh.read(), metadata={"source": os.path.basename(f)}))
-        if not docs:
-            docs = [Document(page_content="Seed guidance snippet. Add *.md docs to this folder.", metadata={"source": "seed_doc.txt"})]
-        splitter = RecursiveCharacterTextSplitter(chunk_size=self.cfg["retrieval"]["chunk_size"],
-                                                  chunk_overlap=self.cfg["retrieval"]["chunk_overlap"])
-        chunks = splitter.split_documents(docs) if docs else []
-        self.vs = FAISS.from_documents(chunks, self.embedder)
-        self.vs.save_local(self.index_path)
 
-    def retrieve(self, query: str, k: int) -> List[Dict[str, Any]]:
+        # Try to create marker atomically
+        created_marker = False
+        try:
+            fd = os.open(marker_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            created_marker = True
+        except FileExistsError:
+            pass  # someone else created it
+
+        RagPipeline._BUILDING = True
+        try:
+            # Build from local *.md files (ignore README)
+            files = [f for f in glob.glob(os.path.join(self.kb_dir, "*.md")) if os.path.basename(f).lower() != "readme.md"]
+            docs = []
+            for fpath in files:
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
+                        docs.append(Document(page_content=fh.read(), metadata={"source": os.path.basename(fpath)}))
+                except Exception:
+                    pass
+            if not docs:
+                docs = [Document(page_content="Seed guidance snippet. Add *.md docs to this folder.", metadata={"source": "seed_doc.txt"})]
+
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.cfg["retrieval"]["chunk_size"],
+                chunk_overlap=self.cfg["retrieval"]["chunk_overlap"]
+            )
+            chunks = splitter.split_documents(docs) if docs else []
+            self.vs = FAISS.from_documents(chunks, self.embedder)
+            self.vs.save_local(self.index_path)
+        finally:
+            RagPipeline._BUILDING = False
+            if created_marker and os.path.exists(marker_file):
+                try:
+                    os.remove(marker_file)
+                except Exception:
+                    pass
+
+    def retrieve(self, query: str, k: int):
+        _engine_log("RagPipeline.retrieve: similarity_search")
         docs = self.vs.similarity_search(query, k=k)
-        return [{"text": d.page_content, "doc_id": d.metadata.get("source", "doc") } for d in docs]
+        return [{"text": d.page_content, "doc_id": d.metadata.get("source", "doc")} for d in docs]
 
-    def answer(self, query: str, entities: List[Dict[str, Any]], relations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def answer(self, query: str, entities, relations):
+        _engine_log("RagPipeline.answer: assembling context and invoking LLM")
         k = self.cfg["retrieval"]["k"]
-        k_final = self.cfg["retrieval"]["k_final"]
+        k_final = max(1, min(self.cfg["retrieval"]["k_final"], 5))  # clamp (Fix #5)
         retrieved = self.retrieve(query, k)[:k_final]
-        context = "\n\n".join([f"[{i+1}] {r['doc_id']}: {r['text'][:1000]}" for i, r in enumerate(retrieved)])
-        msgs = self.prompt.format_messages(context=context, entities=entities, relations=relations, query=query)
-        out = self.llm.invoke(msgs)
-        return {"answer": out, "sources": retrieved}
 
-# ---------- Utilities ----------
-SECTION_PATTERNS = {
-    "HPI": re.compile(r"\b(HPI|History of Present Illness)\s*:\s*", re.I),
-    "Assessment": re.compile(r"\b(Assessment|Impression)\s*:\s*", re.I),
-    "Plan": re.compile(r"\b(Plan)\s*:\s*", re.I),
-}
+        # Truncate long chunks to reduce context overflow 
+        MAX_CHARS = 900
+        context = "\\n\\n".join([f"[{i+1}] {r['doc_id']}: {r['text'][:MAX_CHARS]}" for i, r in enumerate(retrieved)])
 
-def split_sections(text: str) -> Dict[str, str]:
-    sections = {"HPI": "", "Assessment": "", "Plan": ""}
-    anchors = []
-    for name, pat in SECTION_PATTERNS.items():
-        for m in pat.finditer(text):
-            anchors.append((m.start(), m.end(), name))
-    anchors.sort()
-    if not anchors:
-        sections["HPI"] = text
-        return sections
-    for i, (s, e, name) in enumerate(anchors):
-        end = anchors[i+1][0] if i+1 < len(anchors) else len(text)
-        sections[name] = text[e:end].strip()
-    return sections
+        # --- Derive mtsamples-style keywords from entities (SYMPTOM/DRUG/CONDITION) ---
+        kw_items = []
+        for e in entities or []:
+            lab = (e.get("label") or "").upper()
+            if lab in {"SYMPTOM", "DRUG", "CONDITION"}:
+                val = e.get("canonical_name") or e.get("text") or ""
+                val = val.strip()
+                if val:
+                    kw_items.append(val)
+        # Deduplicate, title-case like mtsamples style
+        keywords = []
+        seen = set()
+        for k in kw_items:
+            kk = k.title()
+            if kk not in seen:
+                seen.add(kk); keywords.append(kk)
+        kw_str = ", ".join(keywords) if keywords else ""
+        _engine_log(f"Keywords: {kw_str}")
+
+        payload = {"context": context, "entities": entities, "relations": relations, "query": query}
+        try:
+            if self.chain is not None:
+                out = self.chain.invoke(payload)
+            else:
+                prompt_str = self.prompt.format(**payload).to_string()
+                out = self.llm.invoke(prompt_str)
+        except Exception as e:
+            raise RuntimeError("LLM call failed. Ensure Ollama is running and meditron:7b is pulled.") from e
+
+        return {"answer": out, "sources": retrieved, "keywords": keywords}
