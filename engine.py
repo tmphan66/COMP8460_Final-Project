@@ -48,7 +48,6 @@ class DeIdentifier:
         return {"text": out, "had_phi": had_phi}
 
 # ---------- NER (Entity Extraction) ----------
-# (This class is unchanged)
 try:
     import spacy
     SPACY_OK = True
