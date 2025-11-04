@@ -2,7 +2,13 @@ streamlit>=1.37.0
 pyyaml>=6.0.1
 langchain>=0.2.0
 langchain-community>=0.2.0
+langchain-ollama>=0.1.0
 faiss-cpu>=1.7.4
 scispacy>=0.5.4
 spacy>=3.7.2
 philter @ git+https://github.com/BCHSI/philter-ucsf.git#egg=philter
+
+# --- SciSpaCy Model ---
+# This line installs the 'en_core_sci_sm' model
+# required by the ClinicalNER class in engine.py
+https://s3-us-west-2.amazonaws.com/ai2-s3/scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
