@@ -3,7 +3,7 @@ project:
 models:
   llm:
     provider: ollama
-    model: "meditron:7b"
+    model: "gemma3:4b"
     temperature: 0.2
     max_tokens: 700
   embeddings:
@@ -12,11 +12,12 @@ models:
 retrieval:
   chunk_size: 800
   chunk_overlap: 160
-  k: 20
-  k_final: 5
+  k: 5
+  k_final: 3
 privacy:
-  block_on_phi_leak: true
+  block_on_phi_leak: false
+# We add this section back, but set 'enable' to false
 umls_linking:
-  enable: true
+  enable: false
   k: 1
   threshold: 0.75
