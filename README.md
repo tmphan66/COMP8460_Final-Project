@@ -1,8 +1,9 @@
-# COMP8460 Final Project — Drug AI Assistant (RAG + Pandas Agent)
+# COMP8460 Final Project — Drug AI Assistant (RAG + Pandas Agent + OCR)
 
 An interactive command‑line assistant that answers questions about **drug reviews** using:
 - A **RAG pipeline** over a local ChromaDB vector store built from `drugsComTest_raw.csv`.
 - A **Pandas analysis agent** for counts, averages, and simple stats from the dataset.
+- A **Multimodal OCR tool** to extract drug names from image file paths.
 - A local **Ollama** LLM (`gemma3:4b`) and **HuggingFace** sentence embeddings (`all-MiniLM-L6-v2`).
 
 > ⚙️ First run automatically builds a persistent ChromaDB index in `./chroma_db` from the CSV, then reuses it on subsequent runs.
@@ -10,11 +11,12 @@ An interactive command‑line assistant that answers questions about **drug revi
 ---
 
 ## ✨ Features
-- **Two-tool agent** with ReAct reasoning:
+- **Three-tool agent** with ReAct reasoning:
   - `chroma_search` — retrieves semantically relevant user reviews with rich metadata (drug name, condition, rating).
   - `pandas_analysis` — answers analytic questions (e.g., averages, counts, “top N”).
+  - `drug_name_from_image` - extracts text (like a drug name) from a local image file path using **EasyOCR**, enabling image-to-text-to-data queries.
 - **Local-first** setup: no external API keys needed once Ollama + model are installed.
-- **Reproducible**: `requirements.txt` pins major LangChain components and ChromaDB version.
+- **Reproducible**: `requirements.txt` pins major LangChain components and ChromaDB version, and OCR libraries.
 
 ---
 
@@ -91,6 +93,7 @@ Type your questions at the prompt. Type `exit` to quit.
 - A **SelfQueryRetriever** lets the agent translate natural-language filters into structured metadata queries (e.g., filter by condition or rating).
 
 ### Agent + Tools
+- **`drug_name_from_image(image_path)`**: **NEW TOOL.** Must be used first when the query includes a file path (e.g., `images/Tylenol.jpg`). It uses EasyOCR to extract text, which the agent then uses to inform the next tool call (e.g., `chroma_search`).
 - **`chroma_search(query)`**: Use for *semantic, qualitative* questions (e.g., “What side effects do people report for X?”). Returns raw review snippets for summarization.
 - **`pandas_analysis(query)`**: Use for *quantitative* questions (e.g., “average rating for Y”, “how many reviews for Z?”). Executes a DF-aware agent with safe code execution enabled.
 
@@ -106,7 +109,12 @@ Quantitative (Pandas):
 - “What is the **average rating** for **ibuprofen**?”
 - “Top 5 most common **conditions** in the dataset.”
 
-> Tip: If your question is about **numbers, averages, counts, or top lists**, prefer `pandas_analysis`. Otherwise, ask for experiences or side effects and let the agent use `chroma_search`.
+New Multimodal Example:
+- “Tell me about user experiences and reviews for the drug whose name is in the picture located at **images/my_pill_label.jpg**.” 
+  - *This will trigger the agent to use `drug_name_from_image` first, then `chroma_search`.*
+
+> Tip: If your question is about **numbers, av
+erages, counts, or top lists**, prefer `pandas_analysis`. Otherwise, ask for experiences or side effects and let the agent use `chroma_search`.
 
 ---
 

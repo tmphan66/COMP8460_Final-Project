@@ -1,0 +1,21 @@
+# Python Virtual Environments
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+
+# macOS files
+.DS_Store
+
+# Environment variables
+# Never commit your secrets!
+.env
+*.env
