@@ -1,157 +1,310 @@
-# COMP8460 Final Project — Drug AI Assistant (RAG + Pandas Agent)
+# COMP8460 Final Project — Drug AI Assistant (Streamlit + RAG + Tools)
 
-An interactive command‑line assistant that answers questions about **drug reviews** using:
-- A **RAG pipeline** over a local ChromaDB vector store built from `drugsComTest_raw.csv`.
-- A **Pandas analysis agent** for counts, averages, and simple stats from the dataset.
-- A local **Ollama** LLM (`gemma3:4b`) and **HuggingFace** sentence embeddings (`all-MiniLM-L6-v2`).
+An interactive **Streamlit web app** and **CLI assistant** that answers questions about **drug reviews** using:
 
-> ⚙️ First run automatically builds a persistent ChromaDB index in `./chroma_db` from the CSV, then reuses it on subsequent runs.
+- A **RAG (Retrieval-Augmented Generation) pipeline** over a local ChromaDB vector store built from `drugsComTest_raw.csv`.
+- A set of **tool-calling agents** for:
+  - OCR on uploaded medicine images (EasyOCR)
+  - Searching reviews and side effects (RAG over ChromaDB)
+  - Basic analytics like average rating, review counts, and Top-5 lists (Pandas)
+- A local **Ollama** LLM (e.g. `gemma3:4b`) and **HuggingFace** sentence embeddings (e.g. `all-MiniLM-L6-v2`).
 
----
+You can use:
 
-## ✨ Features
-- **Two-tool agent** with ReAct reasoning:
-  - `chroma_search` — retrieves semantically relevant user reviews with rich metadata (drug name, condition, rating).
-  - `pandas_analysis` — answers analytic questions (e.g., averages, counts, “top N”).
-- **Local-first** setup: no external API keys needed once Ollama + model are installed.
-- **Reproducible**: `requirements.txt` pins major LangChain components and ChromaDB version.
+- `app.py` → **Streamlit UI** (main way to demo the project)  
+- `main.py` → **Backend / CLI assistant** for debugging and experimentation  
 
 ---
 
-## 📦 Repository layout
-```
+## ✨ Key Components
+
+### `app.py` — Streamlit Web App
+
+`app.py` provides the browser-based interface for the assistant. It:
+
+- Sets up the **Streamlit layout**:
+  - Sidebar for configuration and instructions
+  - Main area for:
+    - Image upload
+    - Text input for user questions
+    - Display of the agent’s final answer (and optionally tool traces / debug logs)
+- Uses `st.cache_*` (or equivalent) to **cache heavy objects** so they only load once per session:
+  - LLM (via Ollama)
+  - Embedding model
+  - ChromaDB client
+  - Pandas DataFrame with drug reviews
+  - EasyOCR reader
+- Creates an instance of the **agent executor** defined in `main.py` and calls it whenever the user submits a question.
+- Handles:
+  - **Image questions**: pass the uploaded image + user query into the agent context.
+  - **Text-only questions**: pass just the query.
+- Renders the **final answer** clearly (and can optionally show intermediate thoughts / tool calls for debugging).
+
+In short: `app.py` = **UI layer** (Streamlit) + **glue** to call the agent from `main.py`.
+
+---
+
+### `main.py` — Backend, Tools, and Agent
+
+`main.py` contains the **core logic** of the system:
+
+1. **Initialisation**
+   - Loads the **Ollama LLM** (e.g. `gemma3:4b`).
+   - Loads the **HuggingFaceEmbeddings** model (e.g. `all-MiniLM-L6-v2`).
+   - Loads `drugsComTest_raw.csv` into a **Pandas DataFrame**.
+   - Creates or connects to a **ChromaDB** collection for semantic search over reviews.
+   - Initialises an **EasyOCR** reader for image text extraction.
+
+2. **Tool Definitions**
+
+   Tools are defined with `@tool` decorators and used by the ReAct-style agent:
+
+   - `process_image(query_about_image: str) -> str`  
+     - Extracts text from an uploaded image using OCR.  
+     - Called **at most once** per user question involving an image.  
+     - Returns the raw recognized text (e.g. drug name, strength, etc.).
+
+   - `rag_search(query: str) -> str`  
+     - Searches the ChromaDB vector store of reviews.  
+     - Use for qualitative questions:
+       - side effects
+       - experiences
+       - “drugs for a specific condition”  
+     - Returns a short summary plus snippets and ratings.
+
+   - `get_average_rating(drug_name: str) -> str`  
+     - Uses the Pandas DataFrame to compute the average rating for a given drug.  
+
+   - `get_review_count(drug_name: str) -> str`  
+     - Returns the total number of reviews for a **single** drug.  
+
+   - `get_top_most(query: str) -> str`  
+     - Returns the Top-5 most reviewed drugs or drugs for a condition, with counts.
+
+3. **Agent Prompt & Behaviour**
+
+   `main.py` also defines a **ReAct-style prompt** that instructs the model to:
+
+   - Think in steps: `Thought → Action → Action Input → Observation → ... → Final Answer`.
+   - Follow strict **image rules**:
+     - If (and only if) there is an image:
+       - Call `process_image` **once** to read the text.
+       - For “What is the drug in the image?” → answer directly from OCR.
+       - For image + reviews/side-effects → use `rag_search` and/or other tools afterwards.
+   - Follow strict **RAG rules**:
+     - Use `rag_search` only for reviews, experiences, or drugs for a condition.
+     - Avoid using it for simple identification or pure numeric questions.
+   - **Avoid hallucinations**:
+     - Only use drug names from the user’s input or tool Observations.
+     - If information is missing, respond that it is not available rather than inventing it.
+   - **Handle PHI / redacted tags** safely:
+     - Never try to guess `[REDACTED_NAME]`, `[REDACTED_EMAIL]`, etc.
+     - Focus only on the medical content of the question.
+
+4. **Optional CLI Loop**
+
+   `main.py` can also be run directly to start a simple **command-line interface**:
+
+   - Prompts you to type a query.
+   - Calls the same agent and tools.
+   - Prints the final answer (and often some debug logs).
+
+---
+
+## 📂 Project Structure
+
+A typical layout:
+
+```text
 .
-├─ main.py                 # CLI app: builds/loads ChromaDB, sets up tools & agent, runs loop
-├─ requirements.txt        # Python dependencies
-├─ drugsComTest_raw.csv    # Dataset of user reviews (drugName, condition, rating, review, usefulCount)
-└─ chroma_db/              # Auto-generated on first run (vector index; do not commit large contents)
+├─ app.py                 # Streamlit web application (UI and glue)
+├─ main.py                # Backend logic, tools, RAG, OCR, and CLI
+├─ drugsComTest_raw.csv   # Dataset of drug reviews (drugName, condition, rating, review, etc.)
+├─ chroma_db/             # ChromaDB collection (auto-created on first run)
+├─ requirements.txt       # Python dependencies
+└─ README.md              # This file
 ```
+
+> `chroma_db/` is created automatically on first run and reused afterwards.  
+> Deleting it will force a rebuild of the vector index.
 
 ---
 
-## 🚀 Quickstart
+## 🛠 Prerequisites
 
-### 0) Clone the repo
+- **Python 3.10+**
+- **Ollama** installed and running:
+  - https://ollama.com/
+- An Ollama model compatible with the code (e.g. `gemma3:4b`) pulled locally:
+  ```bash
+  ollama pull gemma3:4b
+  ```
+- (Optional but recommended) a Python **virtual environment**.
+
+---
+
+## 🧬 Getting the Code
+
+Using GitHub CLI (your setup):
+
 ```bash
-# Using GitHub CLI
 gh repo clone tmphan66/COMP8460_Final-Project
 cd COMP8460_Final-Project
 ```
 
-### 1) Install system prerequisites
-- **Python 3.10+**
-- **Ollama** (https://ollama.com/download)
+(Alternatively, you can use `git clone` if you prefer.)
 
-Then pull the local LLM used by this project:
-```bash
-ollama pull gemma3:4b
-```
+---
 
-### 2) Create a virtual environment and install deps
-**Windows (PowerShell):**
+## 📦 Setup & Installation
+
+From inside the project directory:
+
+### 1. Create and Activate a Virtual Environment
+
+**Windows (PowerShell)**
+
 ```powershell
-py -m venv .venv
-. .venv\Scripts\Activate.ps1
-pip install --upgrade pip
-pip install -r requirements.txt
+py -m venv venv
+.\venv\Scripts\Activate.ps1
 ```
 
-**macOS/Linux (bash):**
+**macOS / Linux (bash)**
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 2. Install Dependencies
+
+```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 3) Make sure the dataset is present
-Confirm `drugsComTest_raw.csv` exists at the project root. If you have a different path, update `CSV_PATH` in `main.py`.
+Make sure that:
 
-### 4) Run the assistant
+- `drugsComTest_raw.csv` is present in the project root.
+- Ollama is running and the required model (e.g. `gemma3:4b`) is available.
+
+---
+
+## 🚀 Running the Streamlit App
+
+From the project root **with the virtual environment activated**, run:
+
+```bash
+streamlit run app.py
+```
+
+If `streamlit` is not on your PATH (common on Windows), you can also do:
+
+```bash
+py -m streamlit run app.py
+```
+
+Streamlit will print a local URL such as:
+
+```text
+Local URL: http://localhost:8501
+```
+
+Open that URL in your browser to use the web app.
+
+---
+
+## 🧑‍💻 Using the App
+
+### Image-Based Questions
+
+1. Upload a photo of a medicine box or blister pack.
+2. Type a question, for example:
+   - `What is the drug in this image?`
+   - `What are the common side effects of this medicine?`
+3. The agent will:
+   - Call `process_image` to read the text.
+   - Either:
+     - Answer directly (for identification), or
+     - Use `rag_search` and other tools to summarise reviews and side-effects.
+
+### Text-Only Questions
+
+You can also ask questions without an image, such as:
+
+- `What are people saying about the side effects of Valtrex?`
+- `How many reviews are there for Panadol?`
+- `What are the top 5 drugs for treating depression according to the reviews?`
+
+The agent will pick the right tools:
+
+- `rag_search` for qualitative questions.
+- `get_average_rating` for numeric rating summaries.
+- `get_review_count` for counts.
+- `get_top_most` for Top-5 lists.
+
+---
+
+## 🖥 Running the CLI Assistant (Optional)
+
+To use the agent from the command line instead of the browser, run:
+
 ```bash
 python main.py
 ```
-On first run, you’ll see logs for:
-- Loading the LLM and embedding model
-- Building the ChromaDB index (only once, persisted at `./chroma_db`)
 
-Type your questions at the prompt. Type `exit` to quit.
+You’ll be able to type questions into the terminal, and the agent will answer using the same tools as the Streamlit app.
 
 ---
 
-## 🧠 How it works
+## 🧠 High-Level Architecture
 
-### Models
-- **LLM**: `gemma3:4b` via Ollama
-- **Embeddings**: `all-MiniLM-L6-v2` via `langchain-huggingface`
+1. **Data Layer**
+   - `drugsComTest_raw.csv` → Pandas DataFrame.
+   - Each review row is converted into a document with text + metadata.
 
-### RAG (ChromaDB)
-- The CSV is cleaned and converted into `Document` objects with metadata (`drugName`, `condition`, `rating`, `usefulCount`).
-- Documents are embedded and stored in a local **Chroma** vector DB in `./chroma_db`.
-- A **SelfQueryRetriever** lets the agent translate natural-language filters into structured metadata queries (e.g., filter by condition or rating).
+2. **Vector Store**
+   - Documents are embedded with a HuggingFace model (e.g. `all-MiniLM-L6-v2`).
+   - Stored in ChromaDB for fast similarity search.
 
-### Agent + Tools
-- **`chroma_search(query)`**: Use for *semantic, qualitative* questions (e.g., “What side effects do people report for X?”). Returns raw review snippets for summarization.
-- **`pandas_analysis(query)`**: Use for *quantitative* questions (e.g., “average rating for Y”, “how many reviews for Z?”). Executes a DF-aware agent with safe code execution enabled.
+3. **LLM & Tools**
+   - LLM (via Ollama) drives reasoning and decision-making.
+   - Tools wrap OCR, RAG retrieval, and Pandas-based analytics.
 
----
+4. **Agent**
+   - ReAct-style agent orchestrates:
+     - When to call each tool,
+     - How to combine tool outputs,
+     - How to produce a safe, grounded final answer.
 
-## 💡 Example prompts
-
-Qualitative (RAG):
-- “What are people saying about the side effects of taking amoxicillin?”
-- “Summarize experiences for patients with **anxiety** taking **buspirone** (rating ≥ 8).”
-
-Quantitative (Pandas):
-- “What is the **average rating** for **ibuprofen**?”
-- “Top 5 most common **conditions** in the dataset.”
-
-> Tip: If your question is about **numbers, averages, counts, or top lists**, prefer `pandas_analysis`. Otherwise, ask for experiences or side effects and let the agent use `chroma_search`.
-
----
-
-## 🛠 Configuration
-
-You can change these constants in `main.py`:
-```python
-CSV_PATH = "drugsComTest_raw.csv"
-DB_PATH = "chroma_db"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-# LLM: ChatOllama(model="gemma3:4b")
-```
-
-If you move the dataset or want a new index location, update `CSV_PATH` and `DB_PATH` accordingly.
+5. **Interface**
+   - `app.py` → Streamlit front-end.
+   - `main.py` → Backend and optional CLI.
 
 ---
 
 ## 🧪 Troubleshooting
 
-- **Ollama model not found**: Run `ollama pull gemma3:4b` and ensure the Ollama server is running.
-- **Import errors / version mismatches**: Reinstall from `requirements.txt` inside a fresh venv.
-- **Index rebuild**: Delete the `chroma_db/` directory to force a rebuild on next run.
-- **Empty/whitespace query**: The agent deliberately returns “Please enter a query” without calling tools.
-- **CUDA**: The default embedding device is CPU. If you have a GPU, change `model_kwargs={"device": "cuda"}` in `main.py` for embeddings.
-
----
-
-## 🔍 Dataset schema (expected columns)
-- `drugName` (str)
-- `condition` (str)
-- `rating` (int)
-- `review` (str)
-- `usefulCount` (int)
-
-If the CSV file uses different column names, adjust the DataFrame cleaning logic in `main.py` accordingly.
-
----
-
-## 📜 License
-Add a license of your choice (e.g., MIT) at the repo root as `LICENSE`. If you’re unsure, you can start with MIT and update later.
+- **Slow first run**
+  - The first run may be slow while:
+    - Loading the LLM.
+    - Building the Chroma index from the CSV.
+- **Ollama connection/model errors**
+  - Ensure `ollama serve` is running.
+  - Ensure the model (e.g. `gemma3:4b`) is downloaded.
+- **Chroma issues**
+  - Delete `chroma_db/` if the index becomes corrupted and re-run the app.
+- **Import errors**
+  - Double-check `requirements.txt`.
+  - Recreate the virtual environment if needed.
 
 ---
 
 ## 🙏 Acknowledgements
-- [LangChain](https://python.langchain.com/)
-- [ChromaDB](https://www.trychroma.com/)
-- [Ollama](https://ollama.com/)
-- [Hugging Face](https://huggingface.co/)
+
+- [Ollama](https://ollama.com/) for local LLM hosting  
+- [LangChain](https://python.langchain.com/) for agents and tools  
+- [ChromaDB](https://www.trychroma.com/) for the vector database  
+- [Hugging Face](https://huggingface.co/) for embeddings  
+- [EasyOCR](https://github.com/JaidedAI/EasyOCR) for OCR  
+
