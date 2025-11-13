@@ -1,9 +1,8 @@
-# COMP8460 Final Project — Drug AI Assistant (RAG + Pandas Agent + OCR)
+# COMP8460 Final Project — Drug AI Assistant (RAG + Pandas Agent)
 
 An interactive command‑line assistant that answers questions about **drug reviews** using:
 - A **RAG pipeline** over a local ChromaDB vector store built from `drugsComTest_raw.csv`.
 - A **Pandas analysis agent** for counts, averages, and simple stats from the dataset.
-- A **Multimodal OCR tool** to extract drug names from image file paths.
 - A local **Ollama** LLM (`gemma3:4b`) and **HuggingFace** sentence embeddings (`all-MiniLM-L6-v2`).
 
 > ⚙️ First run automatically builds a persistent ChromaDB index in `./chroma_db` from the CSV, then reuses it on subsequent runs.
@@ -11,12 +10,11 @@ An interactive command‑line assistant that answers questions about **drug revi
 ---
 
 ## ✨ Features
-- **Three-tool agent** with ReAct reasoning:
+- **Two-tool agent** with ReAct reasoning:
   - `chroma_search` — retrieves semantically relevant user reviews with rich metadata (drug name, condition, rating).
   - `pandas_analysis` — answers analytic questions (e.g., averages, counts, “top N”).
-  - `drug_name_from_image` - extracts text (like a drug name) from a local image file path using **EasyOCR**, enabling image-to-text-to-data queries.
 - **Local-first** setup: no external API keys needed once Ollama + model are installed.
-- **Reproducible**: `requirements.txt` pins major LangChain components and ChromaDB version, and OCR libraries.
+- **Reproducible**: `requirements.txt` pins major LangChain components and ChromaDB version.
 
 ---
 
@@ -35,65 +33,87 @@ An interactive command‑line assistant that answers questions about **drug revi
 
 ### 0) Clone the repo
 ```bash
-# Using GitHub CLI
 gh repo clone tmphan66/COMP8460_Final-Project
 cd COMP8460_Final-Project
 ```
 
-### 1) Install system prerequisites
-- **Python 3.10+**
-- **Ollama** (https://ollama.com/download)
-
-Then pull the local LLM used by this project:
-```bash
-ollama pull gemma3:4b
-```
-
-### 2) Create a virtual environment and install deps
-**Windows (PowerShell):**
-```powershell
-py -m venv .venv
-. .venv\Scripts\Activate.ps1
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-**macOS/Linux (bash):**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 3) Make sure the dataset is present
-Confirm `drugsComTest_raw.csv` exists at the project root. If you have a different path, update `CSV_PATH` in `main.py`.
-
-### 4) Run the assistant
-```bash
-python main.py
-```
-On first run, you’ll see logs for:
-- Loading the LLM and embedding model
-- Building the ChromaDB index (only once, persisted at `./chroma_db`)
-
-Type your questions at the prompt. Type `exit` to quit.
+(Alternatively, you can use `git clone` if you prefer.)
 
 ---
 
-## 🧠 How it works
+## 📦 Setup & Installation
 
-### Models
-- **LLM**: `gemma3:4b` via Ollama
-- **Embeddings**: `all-MiniLM-L6-v2` via `langchain-huggingface`
+From inside the project directory:
 
-### RAG (ChromaDB)
-- The CSV is cleaned and converted into `Document` objects with metadata (`drugName`, `condition`, `rating`, `usefulCount`).
-- Documents are embedded and stored in a local **Chroma** vector DB in `./chroma_db`.
-- A **SelfQueryRetriever** lets the agent translate natural-language filters into structured metadata queries (e.g., filter by condition or rating).
+### 1. Create and Activate a Virtual Environment
+
+**Windows (PowerShell)**
+
+```powershell
+py -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+**macOS / Linux (bash)**
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 2. Install Dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Make sure that:
+
+- `drugsComTest_raw.csv` is present in the project root.
+- Ollama is running and the required model (e.g. `gemma3:4b`) is available.
+
+---
+
+## 🚀 Running the Streamlit App
+
+From the project root **with the virtual environment activated**, run:
+
+```bash
+streamlit run app.py
+```
+
+If `streamlit` is not on your PATH (common on Windows), you can also do:
+
+```bash
+py -m streamlit run app.py
+```
+
+Streamlit will print a local URL such as:
+
+```text
+Local URL: http://localhost:8501
+```
+
+Open that URL in your browser to use the web app.
+
+---
+
+## 🧑‍💻 Using the App
+
+### Image-Based Questions
+
+1. Upload a photo of a medicine box or blister pack.
+2. Type a question, for example:
+   - `What is the drug in this image?`
+   - `What are the common side effects of this medicine?`
+3. The agent will:
+   - Call `process_image` to read the text.
+   - Either:
+     - Answer directly (for identification), or
+     - Use `rag_search` and other tools to summarise reviews and side-effects.
 
 ### Agent + Tools
-- **`drug_name_from_image(image_path)`**: **NEW TOOL.** Must be used first when the query includes a file path (e.g., `images/Tylenol.jpg`). It uses EasyOCR to extract text, which the agent then uses to inform the next tool call (e.g., `chroma_search`).
 - **`chroma_search(query)`**: Use for *semantic, qualitative* questions (e.g., “What side effects do people report for X?”). Returns raw review snippets for summarization.
 - **`pandas_analysis(query)`**: Use for *quantitative* questions (e.g., “average rating for Y”, “how many reviews for Z?”). Executes a DF-aware agent with safe code execution enabled.
 
@@ -109,12 +129,7 @@ Quantitative (Pandas):
 - “What is the **average rating** for **ibuprofen**?”
 - “Top 5 most common **conditions** in the dataset.”
 
-New Multimodal Example:
-- “Tell me about user experiences and reviews for the drug whose name is in the picture located at **images/my_pill_label.jpg**.” 
-  - *This will trigger the agent to use `drug_name_from_image` first, then `chroma_search`.*
-
-> Tip: If your question is about **numbers, av
-erages, counts, or top lists**, prefer `pandas_analysis`. Otherwise, ask for experiences or side effects and let the agent use `chroma_search`.
+> Tip: If your question is about **numbers, averages, counts, or top lists**, prefer `pandas_analysis`. Otherwise, ask for experiences or side effects and let the agent use `chroma_search`.
 
 ---
 
@@ -134,32 +149,26 @@ If you move the dataset or want a new index location, update `CSV_PATH` and `DB_
 
 ## 🧪 Troubleshooting
 
-- **Ollama model not found**: Run `ollama pull gemma3:4b` and ensure the Ollama server is running.
-- **Import errors / version mismatches**: Reinstall from `requirements.txt` inside a fresh venv.
-- **Index rebuild**: Delete the `chroma_db/` directory to force a rebuild on next run.
-- **Empty/whitespace query**: The agent deliberately returns “Please enter a query” without calling tools.
-- **CUDA**: The default embedding device is CPU. If you have a GPU, change `model_kwargs={"device": "cuda"}` in `main.py` for embeddings.
-
----
-
-## 🔍 Dataset schema (expected columns)
-- `drugName` (str)
-- `condition` (str)
-- `rating` (int)
-- `review` (str)
-- `usefulCount` (int)
-
-If the CSV file uses different column names, adjust the DataFrame cleaning logic in `main.py` accordingly.
-
----
-
-## 📜 License
-Add a license of your choice (e.g., MIT) at the repo root as `LICENSE`. If you’re unsure, you can start with MIT and update later.
+- **Slow first run**
+  - The first run may be slow while:
+    - Loading the LLM.
+    - Building the Chroma index from the CSV.
+- **Ollama connection/model errors**
+  - Ensure `ollama serve` is running.
+  - Ensure the model (e.g. `gemma3:4b`) is downloaded.
+- **Chroma issues**
+  - Delete `chroma_db/` if the index becomes corrupted and re-run the app.
+- **Import errors**
+  - Double-check `requirements.txt`.
+  - Recreate the virtual environment if needed.
 
 ---
 
 ## 🙏 Acknowledgements
-- [LangChain](https://python.langchain.com/)
-- [ChromaDB](https://www.trychroma.com/)
-- [Ollama](https://ollama.com/)
-- [Hugging Face](https://huggingface.co/)
+
+- [Ollama](https://ollama.com/) for local LLM hosting  
+- [LangChain](https://python.langchain.com/) for agents and tools  
+- [ChromaDB](https://www.trychroma.com/) for the vector database  
+- [Hugging Face](https://huggingface.co/) for embeddings  
+- [EasyOCR](https://github.com/JaidedAI/EasyOCR) for OCR  
+

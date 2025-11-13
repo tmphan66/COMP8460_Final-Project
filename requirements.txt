@@ -1,7 +1,6 @@
 pydantic>=2.8,<3
 langchain==0.3.*
 langchain-core==0.3.*
-langchain-experimental
 langchain-community==0.3.*
 langchain-ollama>=0.2.0
 langchain-chroma>=0.1.0
