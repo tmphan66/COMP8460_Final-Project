@@ -99,17 +99,22 @@ def load_agent_system():
     # --- 4. Define Tools ---
     simple_retriever = vector_db.as_retriever(
         search_type="similarity", 
-        search_kwargs={"k":5}
+        search_kwargs={"k":5} # Change k for more/fewer results depending on your needs
     )
 
     @tool
     def process_image(query_about_image: str) -> str:
         """
-        Use this tool to extract text from the image via OCR.
-        This tool MUST be called FIRST if the user's query is about an uploaded image.
-        It takes the user's question about the image.
-        It returns recognized text from the image.
-        After you get the text, you MUST use another tool (like `rag_search` or `get_average_rating`) to find information about the drug name you found.
+        Extracts text from an uploaded image using OCR.
+
+        - Call this tool AT MOST ONCE per user question.
+        - Only use it if the user uploaded an image and you need to read text on it.
+        - After you have the OCR text, do NOT call this tool again for the same question.
+        - If the user only wants to know what the drug in the image is, you can answer
+        directly from this OCR text without using other tools.
+
+        Input: The user's question about the image (string).
+        Output: The raw recognized text from the image (string).
         """
 
         print(f"\n>> Calling OCR Tool for uploaded image. Query: {query_about_image}")
@@ -147,13 +152,13 @@ def load_agent_system():
     @tool
     def rag_search(query: str) -> str:
         """
-        Use this tool for two primary purposes:
-        1. To answer QUALITATIVE questions about user experiences, reviews, side effects, or feelings for a *known* drug.
-        2. To find drugs for a specific condition or symptom (e.g., 'I have a cold', 'drugs for depression').
-        Do NOT use this for math, counts, averages, or top lists.
-        It takes plain text input.
-        If a drug name was extracted from an image, you can use that name in the query (e.g., 'reviews for <drug_name>').
-        It returns a summary of matching reviews, including drug names, ratings, snippets, and sentiment.
+        Searches a database of drug reviews.
+        Use this ONLY for:
+        1. Qualitative questions about reviews, side effects, or experiences for a specific drug.
+        2. Finding drugs for a specific condition or symptom (e.g., 'drugs for depression').
+        Do NOT use for: math, counts, averages, or top lists.
+        Input: A search query (string).
+        Output: A summary of matching reviews, including snippets and ratings.
         """
         
         print(f"\n>> Calling RAG Tool with query: {query}")
@@ -199,11 +204,11 @@ def load_agent_system():
     @tool
     def get_average_rating(drug_name: str) -> str:
         """
-        Use this tool to get the average rating (1-10) for ONE drug.
-        Call this tool when user asks for "average rating", "effectiveness", "how effective" of a drug.
-        It takes drug name ONLY (string).
-        It returns one sentence with the average rating and the effectiveness.
-        Do NOT use this tool for counts, side effects, or top lists.
+        Calculates the average rating (1-10) for a SINGLE drug.
+        Use this for: "average rating", "effectiveness", or "how effective" a drug is.
+        Do NOT use for: counts, side effects, or qualitative reviews.
+        Input: The exact drug name ONLY (string).
+        Output: A sentence with the average rating, total review count, and effectiveness.
         """
 
         print(f"\n>> Calling get_average_rating tool for: {drug_name}")
@@ -235,11 +240,11 @@ def load_agent_system():
     @tool
     def get_review_count(drug_name: str) -> str:
         """
-        Use this tool to count the total reviews for ONE drug.
-        Call this tool when user asks "how many reviews" or "total reviews" for a drug.
-        It takes drug name ONLY (string).
-        It returns one sentence with the total review count.
-        Do NOT use this tool for averages, side effects, or top lists.
+        Counts the total number of reviews for a SINGLE drug.
+        Use this for: "how many reviews" or "total reviews" for a specific drug.
+        Do NOT use for: averages, side effects, or qualitative reviews.
+        Input: The exact drug name ONLY (string).
+        Output: A sentence with the total review count.
         """
 
         print(f"\n>> Calling get_review_count tool for: {drug_name}")
@@ -259,11 +264,11 @@ def load_agent_system():
     @tool
     def get_top_most(query: str) -> str:
         """
-        Use this tool to get Top-5 lists of drugs or conditions.
-        Call this tool when user's question includes "top 5 drugs", "top 5 conditions", or "top 5 drugs for <condition>".
-        It takes plain text input.
-        It returns a short labeled Top-5 list (one line per item with counts).
-        Do NOT use this tool for averages, single-drug counts, or qualitative summaries.
+        Finds the Top-5 most reviewed drugs or conditions.
+        Use this for: "top 5 drugs", "top 5 conditions", or "top 5 drugs for <condition>".
+        Do NOT use for: averages, single-drug counts, or qualitative summaries.
+        Input: The user's query, like "top 5 drugs for pain" (string).
+        Output: A formatted Top-5 list with counts.
         """
         
         print(f"\n>> Calling get_top_most tool with query: {query}")
@@ -348,29 +353,30 @@ def load_agent_system():
 
         --- RULES (Follow Strictly) ---
 
-        1. **IMAGE QUESTIONS**: If the user uploaded an image:
-           - Step 1: You MUST use the `process_image` tool first.
-           - Step 2: Read the text from the `Observation`. Find the drug name in that text.
-           - Step 3: You MUST then use the `rag_search` tool with the found drug name to get reviews and information about it.
-           - Step 4: Use the output of `rag_search` to give a helpful final answer.
-
-        2. **NORMAL QUESTIONS**: If there is no image, just use the best tool for the question.
+        **IMAGE QUESTIONS**:
+        1. Call process_image ONCE to read text from the image.
+        2. After that, NEVER call process_image again for the same user question.
+        3. If the user only asks "What is the drug in the image?":
+            - Read the OCR text.
+            - Pick the most likely drug name.
+            - Answer directly. Do NOT use any other tools.
+        4. If the user asks about reviews, side effects, or experiences:
+            - Use rag_search with the drug name from OCR.
+            - Then answer.
         
-        3. **RAG_SEARCH RULE (IMPORTANT!)**:
-           - After you use `rag_search` and get an `Observation` with reviews:
-           - Your *next* `Thought` MUST be "I now know the final answer."
-           - You MUST then provide a `Final Answer`.
-           - Your `Final Answer` should summarize the reviews and mention the drug names found.
+        **RAG_SEARCH**:
+        - Use ONLY for: reviews, side effects, experiences, drugs for a condition.
+        - After rag_search, you MUST give a final answer. Do NOT call rag_search again.
         
-        4. **ALWAYS**: Answer the user's question in a helpful sentence. Do not just repeat the tool's output.
+        **ALWAYS**: Answer the user's question in a helpful sentence. Do not just repeat the tool's output.
         
-        5. **NEVER HALLUCINATE (CRITICAL!)**:
-           - You MUST ONLY use drug names that are explicitly provided in a tool's 'Observation'.
-           - DO NOT make up drug names (like 'Ibotragomine') or any other information.
+        **NEVER HALLUCINATE (CRITICAL!)**:
+            - You MUST ONLY use drug names that are explicitly provided in a tool's 'Observation'.
+           - DO NOT make up drug names or any other information.
            - Stick *only* to the facts from the 'Observation'.
            - If the tools don't provide an answer, just say you don't know.
 
-        6. **PHI / REDACTED TEXT**:
+        **PHI / REDACTED TEXT**:
            - The user's query may contain tags like [REDACTED_NAME] or [REDACTED_EMAIL].
            - You MUST NOT try to guess or infer what the redacted text was.
            - Answer the question as if the text was never there.
@@ -387,7 +393,9 @@ def load_agent_system():
         agent=agent,
         tools=tools,
         verbose=True,
-        handle_parsing_errors=True
+        handle_parsing_errors=True,
+        max_iterations=5,
+        early_stopping_method="generate"
     )
 
     print("--- Agent Executor created successfully. ---")
